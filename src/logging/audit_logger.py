@@ -48,6 +48,7 @@ class AuditEventType(str, Enum):
     AGENT_INITIALIZED = "AGENT_INITIALIZED"
     AGENT_CONVERSATION_START = "AGENT_CONVERSATION_START"
     AGENT_CONVERSATION_END = "AGENT_CONVERSATION_END"
+    AGENT_MESSAGE = "AGENT_MESSAGE"
     AGENT_MESSAGE_SENT = "AGENT_MESSAGE_SENT"
     AGENT_MESSAGE_RECEIVED = "AGENT_MESSAGE_RECEIVED"
     AGENT_ERROR = "AGENT_ERROR"
@@ -361,6 +362,29 @@ class ClinicalAuditLogger:
             extra=extra,
         )
     
+    def log_agent_message(
+        self,
+        agent_name: str,
+        message_type: str,
+        content_preview: str,
+        correlation_id: Optional[str] = None,
+    ):
+        """Log an agent message during conversation."""
+        extra = self._create_extra(
+            AuditEventType.AGENT_MESSAGE,
+            correlation_id=correlation_id,
+            agent_name=agent_name,
+            metadata={
+                "message_type": message_type,
+                "content_preview": content_preview[:500],
+                "content_length": len(content_preview),
+            },
+        )
+        self.agent_logger.info(
+            f"[{agent_name}] {message_type}: {content_preview[:100]}...",
+            extra=extra,
+        )
+    
     def log_conversation_start(
         self,
         correlation_id: str,
@@ -397,32 +421,6 @@ class ClinicalAuditLogger:
         )
         self.audit_logger.info(
             f"Conversation ended: {message_count} messages in {duration_ms:.0f}ms",
-            extra=extra,
-        )
-    
-    def log_agent_message(
-        self,
-        agent_name: str,
-        message_type: str,  # "sent" or "received"
-        correlation_id: str,
-        content_length: int,
-        patient_id: Optional[str] = None,
-    ):
-        """Log individual agent message."""
-        event_type = (
-            AuditEventType.AGENT_MESSAGE_SENT
-            if message_type == "sent"
-            else AuditEventType.AGENT_MESSAGE_RECEIVED
-        )
-        extra = self._create_extra(
-            event_type,
-            agent_name=agent_name,
-            correlation_id=correlation_id,
-            patient_id=patient_id,
-            metadata={"content_length": content_length},
-        )
-        self.agent_logger.debug(
-            f"{agent_name} {message_type} message ({content_length} chars)",
             extra=extra,
         )
     

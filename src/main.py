@@ -28,14 +28,10 @@ def _shutdown():
         print("\n" + "=" * 60)
         print("📊 LLM Session Cost Report")
         print("=" * 60)
-        report = _telemetry.get_session_report()
-        print(report)
+        _telemetry.print_cost_summary()
         
         # Save session report to file
         _telemetry.save_session_report()
-        
-        # End session
-        _telemetry.end_session()
     
     # Log system stop
     if _logger:
@@ -149,7 +145,6 @@ def main():
     
     # Initialize telemetry for LLM cost tracking
     _telemetry = init_telemetry()
-    _telemetry.start_session()
     
     # Register cleanup on exit
     atexit.register(_shutdown)
@@ -167,7 +162,7 @@ def main():
     
     print("\n🧠 NeuroCrew AI")
     print("-" * 40)
-    print(f"📊 Telemetry: Session {_telemetry.session_id[:8]}... started")
+    print(f"📊 Telemetry: Session {_telemetry._session_id[:8]}... started")
     print("-" * 40)
     print("Select mode:")
     print("  1. Demo with sample patient (multi-agent)")
@@ -189,7 +184,7 @@ def main():
         elif choice == "4":
             asyncio.run(run_single_agent_demo("treatment"))
         elif choice == "5":
-            print("\n" + _telemetry.get_session_report())
+            _telemetry.print_cost_summary()
         elif choice == "0":
             print("👋 Goodbye!")
         else:

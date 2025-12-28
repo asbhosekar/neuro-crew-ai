@@ -140,14 +140,37 @@ class NeuroCrew:
             )
         
         try:
-            await Console(self._team.run_stream(task=task))
+            # Run conversation and capture messages for logging
+            message_count = 0
+            async for message in self._team.run_stream(task=task):
+                message_count += 1
+                
+                # Log each agent message to clinical log
+                if hasattr(message, 'source') and hasattr(message, 'content'):
+                    self.logger.log_agent_message(
+                        agent_name=str(message.source),
+                        message_type=type(message).__name__,
+                        content_preview=str(message.content)[:500] if message.content else "",
+                        correlation_id=correlation_id,
+                    )
+                    
+                    # Pretty print for user
+                    print(f"\n---------- {type(message).__name__} ({message.source}) ----------")
+                    print(message.content if message.content else str(message))
+                else:
+                    # Handle TaskResult or other message types
+                    if hasattr(message, 'messages'):
+                        print(f"\n{'='*60}")
+                        print(f"Conversation complete. {len(message.messages)} messages.")
+                    else:
+                        print(message)
             
             # Log successful completion
             duration_ms = (time.time() - start_time) * 1000
             self.logger.log_conversation_end(
                 correlation_id=correlation_id,
                 duration_ms=duration_ms,
-                message_count=12,  # Approximation based on max_messages
+                message_count=message_count,
                 termination_reason="completed",
             )
             
@@ -200,7 +223,7 @@ Each specialist should contribute:
 4. QA Validator: Verify data accuracy
 5. Report Generator: Summarize findings
 
-Collaborate to provide a comprehensive assessment. End with TERMINATE when complete.
+Collaborate to provide a comprehensive assessment. When all specialists have contributed their analysis, end the discussion.
 """
         await self.run_conversation(task, patient_id=patient_id)
         
@@ -225,7 +248,6 @@ Clinical Consultation Request:
 {question}
 
 Please have the appropriate specialists collaborate to address this question.
-When finished, say TERMINATE.
 """
         await self.run_conversation(task)
 
@@ -239,6 +261,41 @@ class SingleAgentChat:
     
     def __init__(self):
         self.model_client = get_model_client()
+        self.logger = get_logger()
+    
+    async def _run_with_logging(self, team: RoundRobinGroupChat, task: str, agent_name: str):
+        """Run a team conversation with clinical logging."""
+        correlation_id = self.logger.new_correlation_id()
+        
+        self.logger.log_conversation_start(
+            correlation_id=correlation_id,
+            task_summary=task[:200],
+            agents_involved=[agent_name],
+        )
+        
+        async for message in team.run_stream(task=task):
+            # Log each message
+            if hasattr(message, 'source') and hasattr(message, 'content'):
+                self.logger.log_agent_message(
+                    agent_name=str(message.source),
+                    message_type=type(message).__name__,
+                    content_preview=str(message.content)[:500] if message.content else "",
+                    correlation_id=correlation_id,
+                )
+                # Pretty print
+                print(f"\n---------- {type(message).__name__} ({message.source}) ----------")
+                print(message.content if message.content else str(message))
+            else:
+                if hasattr(message, 'messages'):
+                    print(f"\n{'='*60}")
+                    print(f"Consultation complete.")
+        
+        self.logger.log_conversation_end(
+            correlation_id=correlation_id,
+            duration_ms=0,
+            message_count=3,
+            termination_reason="completed",
+        )
     
     async def consult_neurologist(self, question: str) -> None:
         """Direct consultation with the Neurologist agent."""
@@ -251,7 +308,7 @@ class SingleAgentChat:
         termination = MaxMessageTermination(3)
         team = RoundRobinGroupChat(participants=[agent], termination_condition=termination)
         
-        await Console(team.run_stream(task=question))
+        await self._run_with_logging(team, question, "Neurologist")
     
     async def consult_prognosis(self, patient_summary: str) -> None:
         """Direct prognosis analysis request."""
@@ -265,7 +322,7 @@ class SingleAgentChat:
         team = RoundRobinGroupChat(participants=[agent], termination_condition=termination)
         
         task = f"Analyze the prognosis for this patient:\n\n{patient_summary}"
-        await Console(team.run_stream(task=task))
+        await self._run_with_logging(team, task, "PrognosisAnalyst")
     
     async def consult_treatment(self, case_details: str) -> None:
         """Get treatment recommendations."""
@@ -279,7 +336,7 @@ class SingleAgentChat:
         team = RoundRobinGroupChat(participants=[agent], termination_condition=termination)
         
         task = f"Provide treatment recommendations for:\n\n{case_details}"
-        await Console(team.run_stream(task=task))
+        await self._run_with_logging(team, task, "TreatmentAdvisor")
 
 
 # Helper function for synchronous usage
