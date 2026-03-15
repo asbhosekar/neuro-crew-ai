@@ -1,5 +1,5 @@
 """
-NeuroCrew AI - Logging Module
+Agentic Neuro Tracker - Logging Module
 
 HIPAA-compliant audit logging and runtime telemetry for clinical AI applications.
 """

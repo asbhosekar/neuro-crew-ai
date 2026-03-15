@@ -1,5 +1,5 @@
 """
-NeuroCrew AI - Agent Orchestrator
+Agentic Neuro Tracker - Agent Orchestrator
 
 Core AutoGen multi-agent conversation orchestration using AutoGen 0.4+ API.
 Sets up RoundRobinGroupChat for collaborative agent interactions.
@@ -46,7 +46,7 @@ def get_model_client() -> OpenAIChatCompletionClient:
             function_calling=True,
             json_output=True,
             family="llama",
-            context_window=8192,  # Llama 3.2 context window
+            context_window=131072,  # llama3.1:8b and phi3:mini-128k both support 128K
             max_output_tokens=4096,
             input_price_per_million_tokens=0.0,  # Free for local
             output_price_per_million_tokens=0.0,  # Free for local
@@ -264,7 +264,7 @@ Analyze this patient case sequentially. Each agent must follow their structured 
 - Build on previous agents' findings - reference and integrate, don't repeat
 - If you disagree with a previous agent's assessment, state your reasoning
 - Flag any data gaps that limit your analysis
-- When all 5 specialists have contributed their structured analysis, say TERMINATE
+- When all specialists have contributed their structured analysis, the last agent should say TERMINATE
 """
         await self.run_conversation(task, patient_id=patient_id)
         
@@ -294,7 +294,7 @@ Each specialist should contribute their expertise using their structured respons
 - Use your designated output format
 - Build on previous agents' analysis - integrate, don't repeat
 - State your confidence level and any limitations
-- When the team has provided a comprehensive answer, say TERMINATE
+- When the team has provided a comprehensive answer, the last agent should say TERMINATE
 """
         await self.run_conversation(task)
 

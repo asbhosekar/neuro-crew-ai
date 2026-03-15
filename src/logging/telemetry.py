@@ -1,5 +1,5 @@
 """
-NeuroCrew AI - Runtime Telemetry
+Agentic Neuro Tracker - Runtime Telemetry
 
 OpenTelemetry-based runtime logging for LLM performance,
 token usage, and cost tracking.
@@ -280,7 +280,7 @@ class RuntimeTelemetry:
         
         report = f"""
 +--------------------------------------------------------------+
-|              NeuroCrew AI - Session Cost Report               |
+|              Agentic Neuro Tracker - Session Cost Report               |
 +--------------------------------------------------------------+
 | Session ID: {s.session_id:<47} |
 | Duration: {s.start_time[:19]} to now                        |

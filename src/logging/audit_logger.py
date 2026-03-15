@@ -1,5 +1,5 @@
 """
-NeuroCrew AI - Clinical Audit Logger
+Agentic Neuro Tracker - Clinical Audit Logger
 
 HIPAA-compliant logging system for clinical AI applications.
 Provides comprehensive audit trails for all agent interactions,
@@ -339,7 +339,7 @@ class ClinicalAuditLogger:
         """Log system startup."""
         extra = self._create_extra(AuditEventType.SYSTEM_START)
         self.audit_logger.info(
-            "NeuroCrew AI system started",
+            "Agentic Neuro Tracker system started",
             extra=extra,
         )
     
@@ -347,7 +347,7 @@ class ClinicalAuditLogger:
         """Log system shutdown."""
         extra = self._create_extra(AuditEventType.SYSTEM_STOP)
         self.audit_logger.info(
-            "NeuroCrew AI system stopped",
+            "Agentic Neuro Tracker system stopped",
             extra=extra,
         )
     

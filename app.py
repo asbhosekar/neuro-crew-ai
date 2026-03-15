@@ -2,12 +2,17 @@
 Neuro Patient Tracker - Streamlit Web Interface
 
 Interactive web UI for the neurology patient tracking system.
-Professional clinical-grade interface with custom styling.
+Professional clinical-grade interface with agent pipeline tracking,
+summary reports, and downloadable detailed reports.
 """
 import streamlit as st
 import asyncio
 import json
-from datetime import datetime, date
+import html
+import time
+import logging
+import base64
+from datetime import datetime, date, timezone
 from src.orchestrator import NeuroCrew, SingleAgentChat
 from src.models.schemas import (
     Gender,
@@ -18,10 +23,26 @@ from src.config import settings
 from autogen_agentchat.agents import AssistantAgent
 import os
 
+try:
+    import nest_asyncio
+    nest_asyncio.apply()
+except ImportError:
+    pass
+
+
+def _run_async(coro):
+    """Run an async coroutine from Streamlit's synchronous context.
+
+    nest_asyncio (applied at module level) patches the running event loop
+    so asyncio.run() works even inside Streamlit's tornado loop.
+    """
+    return asyncio.run(coro)
+
+logger = logging.getLogger("neuro_tracker.ui")
 
 # Page configuration
 st.set_page_config(
-    page_title="Neuro Patient Tracker",
+    page_title="Agentic Neuro Tracker",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -31,15 +52,15 @@ def inject_clinical_css():
     """Inject professional clinical CSS styling."""
     st.markdown("""
     <style>
-    /* ── Import clean medical font ── */
+    /* -- Import clean medical font -- */
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
-    /* ── Global ── */
+    /* -- Global -- */
     .stApp {
         font-family: 'Inter', sans-serif;
     }
 
-    /* ── Sidebar ── */
+    /* -- Sidebar -- */
     section[data-testid="stSidebar"] {
         background: linear-gradient(180deg, #0f1a2e 0%, #1a2744 100%);
         border-right: 2px solid #2a4a7f;
@@ -54,7 +75,7 @@ def inject_clinical_css():
         font-size: 0.95rem;
     }
 
-    /* ── Main header banner ── */
+    /* -- Main header banner -- */
     .clinical-banner {
         background: linear-gradient(135deg, #0d2137 0%, #1a3a5c 50%, #0d2137 100%);
         border: 1px solid #2a5a8f;
@@ -83,7 +104,7 @@ def inject_clinical_css():
         font-weight: 400;
     }
 
-    /* ── Status badge (LLM config) ── */
+    /* -- Status badge (LLM config) -- */
     .status-badge {
         display: inline-flex;
         align-items: center;
@@ -112,7 +133,7 @@ def inject_clinical_css():
     .status-dot.green { background: #4ade80; }
     .status-dot.red   { background: #f87171; }
 
-    /* ── Card containers ── */
+    /* -- Card containers -- */
     .clinical-card {
         background: linear-gradient(135deg, #111b2e 0%, #162035 100%);
         border: 1px solid #253554;
@@ -141,7 +162,7 @@ def inject_clinical_css():
         margin: 0;
     }
 
-    /* ── Agent cards ── */
+    /* -- Agent cards -- */
     .agent-card {
         background: linear-gradient(135deg, #111b2e 0%, #162035 100%);
         border: 1px solid #253554;
@@ -166,7 +187,7 @@ def inject_clinical_css():
         margin-top: 0.15rem;
     }
 
-    /* ── Patient card ── */
+    /* -- Patient card -- */
     .patient-header {
         background: linear-gradient(135deg, #0d1f35 0%, #15294a 100%);
         border: 1px solid #2a4a7f;
@@ -185,7 +206,7 @@ def inject_clinical_css():
         margin-top: 0.3rem;
     }
 
-    /* ── Metric overrides ── */
+    /* -- Metric overrides -- */
     [data-testid="stMetric"] {
         background: linear-gradient(135deg, #0f1c30 0%, #152240 100%);
         border: 1px solid #253554;
@@ -204,7 +225,7 @@ def inject_clinical_css():
         font-weight: 600;
     }
 
-    /* ── Buttons ── */
+    /* -- Buttons -- */
     .stButton > button[kind="primary"] {
         background: linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%);
         border: 1px solid #3b82f6;
@@ -220,7 +241,7 @@ def inject_clinical_css():
         box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
     }
 
-    /* ── Text areas and inputs ── */
+    /* -- Text areas and inputs -- */
     .stTextArea textarea, .stTextInput input {
         background: #0d1825 !important;
         border: 1px solid #253554 !important;
@@ -234,14 +255,14 @@ def inject_clinical_css():
         box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15) !important;
     }
 
-    /* ── Selectbox ── */
+    /* -- Selectbox -- */
     .stSelectbox > div > div {
         background: #0d1825 !important;
         border: 1px solid #253554 !important;
         border-radius: 6px !important;
     }
 
-    /* ── Analysis output ── */
+    /* -- Agent response (for single consultation) -- */
     .agent-response {
         background: linear-gradient(135deg, #0e1a2d 0%, #132038 100%);
         border: 1px solid #253554;
@@ -266,7 +287,222 @@ def inject_clinical_css():
         line-height: 1.7;
     }
 
-    /* ── Event log ── */
+    /* ========================================
+       PIPELINE TRACKER
+       ======================================== */
+    .pipeline-container {
+        background: linear-gradient(135deg, #0a1424 0%, #0f1c32 100%);
+        border: 1px solid #1e3050;
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin: 1rem 0;
+    }
+    .pipeline-title {
+        color: #8ab4e8;
+        font-size: 0.78rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        margin-bottom: 1rem;
+        padding-bottom: 0.5rem;
+        border-bottom: 1px solid #1a2840;
+    }
+
+    .pipeline-row {
+        display: flex;
+        align-items: center;
+        padding: 0.65rem 0.8rem;
+        margin-bottom: 0.35rem;
+        border-radius: 8px;
+        background: rgba(15, 25, 45, 0.5);
+        border: 1px solid transparent;
+        transition: all 0.3s ease;
+    }
+    .pipeline-row.waiting {
+        border-color: #1a2840;
+    }
+    .pipeline-row.running {
+        border-color: #2563eb;
+        background: rgba(37, 99, 235, 0.08);
+        box-shadow: 0 0 12px rgba(37, 99, 235, 0.1);
+    }
+    .pipeline-row.done {
+        border-color: #166534;
+        background: rgba(22, 101, 52, 0.06);
+    }
+    .pipeline-row.error {
+        border-color: #991b1b;
+        background: rgba(153, 27, 27, 0.06);
+    }
+
+    .pipeline-status-icon {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.75rem;
+        font-weight: 700;
+        flex-shrink: 0;
+        margin-right: 0.8rem;
+    }
+    .pipeline-status-icon.waiting {
+        background: rgba(100, 116, 139, 0.15);
+        color: #64748b;
+        border: 1px solid rgba(100, 116, 139, 0.2);
+    }
+    .pipeline-status-icon.running {
+        background: rgba(37, 99, 235, 0.2);
+        color: #60a5fa;
+        border: 1px solid rgba(37, 99, 235, 0.4);
+        animation: pulse-ring 1.5s ease-in-out infinite;
+    }
+    .pipeline-status-icon.done {
+        background: rgba(34, 197, 94, 0.15);
+        color: #4ade80;
+        border: 1px solid rgba(34, 197, 94, 0.3);
+    }
+    .pipeline-status-icon.error {
+        background: rgba(239, 68, 68, 0.15);
+        color: #f87171;
+        border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+
+    @keyframes pulse-ring {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.3); }
+        50% { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0); }
+    }
+
+    .pipeline-agent-name {
+        flex: 1;
+        font-weight: 600;
+        font-size: 0.88rem;
+        color: #e0e8f5;
+    }
+    .pipeline-agent-role {
+        color: #5a7a98;
+        font-size: 0.72rem;
+        font-weight: 400;
+        margin-left: 0.5rem;
+    }
+
+    .pipeline-time {
+        font-family: 'Consolas', 'Courier New', monospace;
+        font-size: 0.78rem;
+        font-weight: 600;
+        min-width: 60px;
+        text-align: right;
+        margin-left: 0.8rem;
+    }
+    .pipeline-time.waiting { color: #4a5568; }
+    .pipeline-time.running { color: #60a5fa; }
+    .pipeline-time.done    { color: #4ade80; }
+    .pipeline-time.error   { color: #f87171; }
+
+    .pipeline-status-label {
+        font-size: 0.7rem;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        min-width: 70px;
+        text-align: center;
+        padding: 0.15rem 0.5rem;
+        border-radius: 4px;
+        margin-left: 0.5rem;
+    }
+    .pipeline-status-label.waiting {
+        color: #64748b;
+        background: rgba(100, 116, 139, 0.1);
+    }
+    .pipeline-status-label.running {
+        color: #60a5fa;
+        background: rgba(37, 99, 235, 0.1);
+    }
+    .pipeline-status-label.done {
+        color: #4ade80;
+        background: rgba(34, 197, 94, 0.1);
+    }
+    .pipeline-status-label.error {
+        color: #f87171;
+        background: rgba(239, 68, 68, 0.1);
+    }
+
+    /* -- Pipeline summary bar -- */
+    .pipeline-summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-top: 1rem;
+        padding-top: 0.8rem;
+        border-top: 1px solid #1a2840;
+    }
+    .pipeline-total {
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #e0ecf5;
+    }
+    .pipeline-total span {
+        color: #4ade80;
+        font-family: 'Consolas', monospace;
+    }
+
+    /* ========================================
+       REPORT SECTIONS
+       ======================================== */
+    .report-card {
+        background: linear-gradient(135deg, #0d1a2e 0%, #132240 100%);
+        border: 1px solid #1e3a5f;
+        border-radius: 12px;
+        padding: 1.5rem 1.8rem;
+        margin-bottom: 1.2rem;
+    }
+    .report-card h3 {
+        color: #8ab4e8;
+        font-size: 0.82rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin: 0 0 1rem 0;
+        padding-bottom: 0.5rem;
+        border-bottom: 1px solid #1a2840;
+    }
+    .report-card .report-body {
+        color: #c8d8e8;
+        font-size: 0.9rem;
+        line-height: 1.7;
+        white-space: pre-wrap;
+    }
+
+    .report-header {
+        background: linear-gradient(135deg, #0a1830 0%, #122040 50%, #0a1830 100%);
+        border: 1px solid #2a5a8f;
+        border-radius: 12px;
+        padding: 1.8rem 2rem;
+        margin-bottom: 1.5rem;
+        text-align: center;
+    }
+    .report-header h2 {
+        font-size: 1.4rem;
+        font-weight: 700;
+        color: #ffffff;
+        margin: 0 0 0.3rem 0;
+    }
+    .report-header .report-meta {
+        color: #7a9ec5;
+        font-size: 0.82rem;
+    }
+
+    /* -- Download button -- */
+    .download-btn-container {
+        text-align: center;
+        margin: 1.5rem 0;
+    }
+
+    /* ========================================
+       EXISTING STYLES
+       ======================================== */
+    /* -- Event log -- */
     .event-log {
         background: #080e18;
         border: 1px solid #1a2840;
@@ -279,7 +515,7 @@ def inject_clinical_css():
         overflow-y: auto;
     }
 
-    /* ── Feature list on home ── */
+    /* -- Feature list on home -- */
     .feature-item {
         display: flex;
         align-items: flex-start;
@@ -303,14 +539,14 @@ def inject_clinical_css():
     .feature-title { font-weight: 600; color: #e0e8f5; font-size: 0.92rem; }
     .feature-desc { color: #7a94b0; font-size: 0.82rem; margin-top: 0.1rem; }
 
-    /* ── Dividers ── */
+    /* -- Dividers -- */
     hr {
         border: none;
         border-top: 1px solid #1e3050;
         margin: 1.5rem 0;
     }
 
-    /* ── Section headers ── */
+    /* -- Section headers -- */
     .section-header {
         color: #8ab4e8;
         font-size: 0.78rem;
@@ -322,7 +558,7 @@ def inject_clinical_css():
         border-bottom: 1px solid #1e3050;
     }
 
-    /* ── About page tech stack ── */
+    /* -- About page tech stack -- */
     .tech-badge {
         display: inline-block;
         padding: 0.25rem 0.65rem;
@@ -335,7 +571,7 @@ def inject_clinical_css():
         margin: 0.2rem;
     }
 
-    /* ── Condition badge ── */
+    /* -- Condition badge -- */
     .condition-badge {
         display: inline-block;
         padding: 0.2rem 0.6rem;
@@ -347,7 +583,7 @@ def inject_clinical_css():
         border: 1px solid rgba(139, 92, 246, 0.25);
     }
 
-    /* ── Hide Streamlit branding ── */
+    /* -- Hide Streamlit branding -- */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
@@ -367,6 +603,247 @@ def check_llm_config():
     elif settings.LLM_PROVIDER == "local":
         return "local", settings.LOCAL_LLM_MODEL
     return "unknown", "N/A"
+
+
+# ─────────────────────────────────────────────
+# Agent metadata for the pipeline tracker
+# ─────────────────────────────────────────────
+AGENT_META = [
+    {"name": "Neurologist",       "role": "Clinical case review & differential diagnosis",  "color": "#3b82f6"},
+    {"name": "PrognosisAnalyst",  "role": "Trend analysis & trajectory projection",         "color": "#8b5cf6"},
+    {"name": "TreatmentAdvisor",  "role": "Medication optimization & dosing",               "color": "#06b6d4"},
+    {"name": "QAValidator",       "role": "Data validation & anomaly detection",            "color": "#f59e0b"},
+    {"name": "ReportGenerator",   "role": "Clinical report synthesis",                      "color": "#10b981"},
+    {"name": "ClinicalArchitect", "role": "HIPAA compliance & data model audit",            "color": "#ec4899"},
+]
+
+AGENT_DISPLAY_NAMES = {
+    "Neurologist": "Neurologist",
+    "PrognosisAnalyst": "Prognosis Analyst",
+    "TreatmentAdvisor": "Treatment Advisor",
+    "QAValidator": "QA Validator",
+    "ReportGenerator": "Report Generator",
+    "ClinicalArchitect": "Clinical Architect",
+}
+
+
+def _render_pipeline_text(agent_states: dict, total_elapsed: float = 0.0) -> str:
+    """Render the agent pipeline tracker as markdown text.
+
+    Uses simple markdown that Streamlit renders reliably in real-time.
+    agent_states: dict mapping agent name -> {status, elapsed_s}
+    """
+    icons = {"waiting": ":gray[--]", "running": ":blue[>>]", "done": ":green[OK]", "error": ":red[!!]"}
+
+    done_count = sum(1 for s in agent_states.values() if s["status"] == "done")
+    total_str = f"{total_elapsed:.1f}s" if total_elapsed > 0 else "---"
+
+    lines = []
+    for meta in AGENT_META:
+        name = meta["name"]
+        state = agent_states.get(name, {"status": "waiting", "elapsed_s": 0.0})
+        status = state["status"]
+        elapsed = state["elapsed_s"]
+        display_name = AGENT_DISPLAY_NAMES.get(name, name)
+        icon = icons.get(status, "--")
+
+        if status == "done":
+            line = f"{icon} **{display_name}** — *{meta['role']}* — :green[{elapsed:.1f}s]"
+        elif status == "running":
+            line = f"{icon} **{display_name}** — *{meta['role']}* — :blue[{elapsed:.1f}s ...]"
+        elif status == "error":
+            line = f"{icon} **{display_name}** — *{meta['role']}* — :red[ERROR]"
+        else:
+            line = f"{icon} **{display_name}** — *{meta['role']}* — :gray[queued]"
+        lines.append(line)
+
+    header = f"**Agent Pipeline** — {done_count}/{len(AGENT_META)} Complete | Total: **{total_str}**"
+    return header + "\n\n" + "\n\n".join(lines)
+
+
+def _generate_downloadable_report(
+    patient_data: dict,
+    agent_results: dict,
+    agent_timings: dict,
+    total_time: float,
+) -> str:
+    """Generate a standalone HTML report for download."""
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    patient_id = html.escape(str(patient_data.get("id", "Unknown")))
+    condition = html.escape(str(patient_data.get("condition", "Unknown")))
+
+    agent_sections = ""
+    for meta in AGENT_META:
+        name = meta["name"]
+        display = AGENT_DISPLAY_NAMES.get(name, name)
+        content = agent_results.get(name, "No response received.")
+        elapsed = agent_timings.get(name, 0.0)
+        safe_content = html.escape(content)
+        agent_sections += f"""
+        <div class="section">
+            <div class="section-header">
+                <span class="agent-dot" style="background:{meta['color']};"></span>
+                {html.escape(display)}
+                <span class="timing">{elapsed:.1f}s</span>
+            </div>
+            <div class="section-body">{safe_content}</div>
+        </div>
+        """
+
+    timing_rows = ""
+    for meta in AGENT_META:
+        name = meta["name"]
+        display = AGENT_DISPLAY_NAMES.get(name, name)
+        elapsed = agent_timings.get(name, 0.0)
+        timing_rows += f"<tr><td>{html.escape(display)}</td><td>{elapsed:.1f}s</td></tr>"
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Clinical Report - {patient_id}</title>
+<style>
+    *, *::before, *::after {{ margin:0; padding:0; box-sizing:border-box; }}
+    body {{
+        font-family: 'Segoe UI', 'Inter', sans-serif;
+        background: #0a1224;
+        color: #e0ecf5;
+        padding: 2rem;
+        line-height: 1.6;
+    }}
+    .page {{ max-width: 900px; margin: 0 auto; }}
+    .header {{
+        text-align: center;
+        padding: 2rem;
+        border-bottom: 2px solid #1e3050;
+        margin-bottom: 2rem;
+    }}
+    .header h1 {{ font-size: 1.8rem; font-weight: 700; margin-bottom: 0.3rem; }}
+    .header .meta {{ color: #7a9ec5; font-size: 0.85rem; }}
+    .patient-info {{
+        background: #0f1a2e;
+        border: 1px solid #1e3050;
+        border-radius: 8px;
+        padding: 1rem 1.5rem;
+        margin-bottom: 1.5rem;
+        display: flex;
+        gap: 2rem;
+    }}
+    .patient-info .field {{ }}
+    .patient-info .label {{ color: #5a7a98; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; }}
+    .patient-info .value {{ color: #e0ecf5; font-weight: 600; font-size: 0.95rem; }}
+    .section {{
+        background: #0f1a2e;
+        border: 1px solid #1e3050;
+        border-radius: 10px;
+        margin-bottom: 1rem;
+        overflow: hidden;
+    }}
+    .section-header {{
+        background: rgba(30, 48, 80, 0.3);
+        padding: 0.8rem 1.2rem;
+        font-weight: 600;
+        font-size: 0.95rem;
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        border-bottom: 1px solid #1e3050;
+    }}
+    .agent-dot {{
+        width: 10px; height: 10px;
+        border-radius: 50%;
+        display: inline-block;
+    }}
+    .timing {{
+        margin-left: auto;
+        font-family: 'Consolas', monospace;
+        font-size: 0.8rem;
+        color: #4ade80;
+    }}
+    .section-body {{
+        padding: 1rem 1.2rem;
+        font-size: 0.88rem;
+        white-space: pre-wrap;
+        color: #c8d8e8;
+        line-height: 1.7;
+    }}
+    .timing-table {{
+        width: 100%;
+        border-collapse: collapse;
+        background: #0f1a2e;
+        border: 1px solid #1e3050;
+        border-radius: 8px;
+        overflow: hidden;
+        margin-bottom: 1.5rem;
+    }}
+    .timing-table th {{
+        background: rgba(30, 48, 80, 0.3);
+        padding: 0.6rem 1rem;
+        text-align: left;
+        font-size: 0.75rem;
+        color: #8ab4e8;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        border-bottom: 1px solid #1e3050;
+    }}
+    .timing-table td {{
+        padding: 0.5rem 1rem;
+        font-size: 0.85rem;
+        border-bottom: 1px solid rgba(30, 48, 80, 0.5);
+    }}
+    .timing-table tr:last-child td {{ border-bottom: none; }}
+    .timing-table tfoot td {{
+        font-weight: 700;
+        background: rgba(30, 48, 80, 0.2);
+        color: #4ade80;
+    }}
+    .footer {{
+        text-align: center;
+        padding: 1.5rem 0;
+        margin-top: 1.5rem;
+        border-top: 1px solid #1e3050;
+        color: #4a6a8a;
+        font-size: 0.78rem;
+    }}
+    @media print {{
+        body {{ background: #fff; color: #1a1a1a; padding: 1rem; }}
+        .section {{ border-color: #ddd; }}
+        .section-header {{ background: #f5f5f5; color: #333; }}
+        .section-body {{ color: #333; }}
+        .header h1 {{ color: #1a1a1a; }}
+    }}
+</style>
+</head>
+<body>
+<div class="page">
+    <div class="header">
+        <h1>Clinical Analysis Report</h1>
+        <div class="meta">Generated: {now} | Agentic Neuro Tracker Multi-Agent System</div>
+    </div>
+
+    <div class="patient-info">
+        <div class="field"><div class="label">Patient ID</div><div class="value">{patient_id}</div></div>
+        <div class="field"><div class="label">Condition</div><div class="value">{condition}</div></div>
+        <div class="field"><div class="label">Agents</div><div class="value">{len(AGENT_META)}</div></div>
+        <div class="field"><div class="label">Total Time</div><div class="value">{total_time:.1f}s</div></div>
+    </div>
+
+    <table class="timing-table">
+        <thead><tr><th>Agent</th><th>Time</th></tr></thead>
+        <tbody>{timing_rows}</tbody>
+        <tfoot><tr><td>Total</td><td>{total_time:.1f}s</td></tr></tfoot>
+    </table>
+
+    {agent_sections}
+
+    <div class="footer">
+        Neuro Patient Tracker v0.1.0 | Generated by Agentic Neuro Tracker<br>
+        This report is for clinical decision support only.
+    </div>
+</div>
+</body>
+</html>"""
 
 
 def main():
@@ -390,7 +867,7 @@ def main():
     with st.sidebar:
         st.markdown("""
         <div style="text-align:center; padding: 0.5rem 0 1rem 0;">
-            <div style="font-size:1.6rem; font-weight:700; color:#e0ecf5; letter-spacing:-0.02em;">NeuroCrew AI</div>
+            <div style="font-size:1.6rem; font-weight:700; color:#e0ecf5; letter-spacing:-0.02em;">Agentic Neuro Tracker</div>
             <div style="font-size:0.75rem; color:#5a7a98; margin-top:0.2rem;">Multi-Agent Clinical Platform</div>
         </div>
         """, unsafe_allow_html=True)
@@ -412,8 +889,8 @@ def main():
                 <span class="status-dot green"></span> Local LLM Active
             </div>
             <div style="color:#5a7a98; font-size:0.75rem; margin-top:0.5rem;">
-                Model: {model_name}<br>
-                Endpoint: {settings.LOCAL_LLM_BASE_URL}
+                Model: {html.escape(model_name)}<br>
+                Endpoint: {html.escape(settings.LOCAL_LLM_BASE_URL)}
             </div>
             """, unsafe_allow_html=True)
         else:
@@ -422,7 +899,7 @@ def main():
                 <span class="status-dot green"></span> OpenAI Active
             </div>
             <div style="color:#5a7a98; font-size:0.75rem; margin-top:0.5rem;">
-                Model: {model_name}
+                Model: {html.escape(model_name)}
             </div>
             """, unsafe_allow_html=True)
 
@@ -522,8 +999,8 @@ def show_home_page():
         for name, desc in agents:
             st.markdown(f"""
             <div class="agent-card">
-                <div class="agent-name">{name}</div>
-                <div class="agent-role">{desc}</div>
+                <div class="agent-name">{html.escape(name)}</div>
+                <div class="agent-role">{html.escape(desc)}</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -607,7 +1084,7 @@ def _format_patient_summary(patient: dict) -> str:
 
 
 def show_patient_analysis_page():
-    """Patient prognosis analysis page."""
+    """Patient prognosis analysis page with pipeline tracker."""
     st.markdown('<div class="section-header">Patient Prognosis Analysis</div>', unsafe_allow_html=True)
 
     test_patients = _load_test_patients()
@@ -641,10 +1118,10 @@ def show_patient_analysis_page():
         # Patient header card
         st.markdown(f"""
         <div class="patient-header">
-            <div class="patient-name">{name}</div>
+            <div class="patient-name">{html.escape(name)}</div>
             <div class="patient-meta">
-                {patient_id} &nbsp;|&nbsp; DOB: {dob} &nbsp;|&nbsp; {gender} &nbsp;|&nbsp;
-                <span class="condition-badge">{condition}</span>
+                {html.escape(patient_id)} &nbsp;|&nbsp; DOB: {html.escape(dob)} &nbsp;|&nbsp; {html.escape(gender)} &nbsp;|&nbsp;
+                <span class="condition-badge">{html.escape(condition)}</span>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -696,43 +1173,56 @@ def show_patient_analysis_page():
             "clinical_summary": clinical_summary,
         }
 
-        analysis_placeholder = st.empty()
-        log_placeholder = st.empty()
-        response_texts = []
+        _run_pipeline_analysis(patient_data)
+
+    # Show previous results if stored in session
+    if "last_report_html" in st.session_state:
+        _show_report_section()
+
+
+def _run_pipeline_analysis(patient_data: dict):
+    """Run the multi-agent pipeline with real-time progress tracking."""
+
+    # State tracking
+    agent_states = {}
+    agent_results = {}
+    agent_timings = {}
+    agent_start_times = {}
+
+    for meta in AGENT_META:
+        agent_states[meta["name"]] = {"status": "waiting", "elapsed_s": 0.0}
+
+    pipeline_start = time.time()
+
+    with st.status("Running multi-agent analysis...", expanded=True) as status_widget:
+        pipeline_display = st.empty()
+        log_display = st.empty()
         log_messages = []
 
         def log(msg):
-            """Add log message and update display."""
             timestamp = datetime.now().strftime("%H:%M:%S")
-            log_messages.append(f"`{timestamp}` {msg}")
-            log_placeholder.markdown(
-                '<div class="event-log">' +
-                "<br>".join(log_messages[-10:]) +
-                '</div>',
-                unsafe_allow_html=True
+            log_messages.append(f"`[{timestamp}]` {msg}")
+            log_display.markdown("\n\n".join(log_messages[-8:]))
+            logger.info(msg)
+
+        def update_pipeline(total_elapsed=0.0):
+            pipeline_display.markdown(
+                _render_pipeline_text(agent_states, total_elapsed)
             )
-            try:
-                print(f"[LOG {timestamp}] {msg}")
-            except UnicodeEncodeError:
-                print(f"[LOG {timestamp}] {msg.encode('ascii', errors='replace').decode()}")
 
-        with st.spinner("Running multi-agent analysis... This may take a moment."):
-            try:
-                import nest_asyncio
-                nest_asyncio.apply()
+        # Initial render
+        update_pipeline()
 
-                async def run_analysis():
-                    """Run multi-agent analysis and capture responses."""
-                    log("Starting multi-agent analysis...")
+        try:
+            async def run_analysis():
+                log("Initializing Agentic Neuro Tracker orchestrator...")
 
-                    log("Creating NeuroCrew...")
-                    crew = NeuroCrew()
+                crew = NeuroCrew()
+                # 14 = 1 user message + 6 agent responses + buffer for multi-turn
+                crew.setup_team(max_messages=14)
+                log(f"Team ready: {', '.join(crew.get_agent_names())}")
 
-                    log("Setting up team with 6 agents (max 6 messages for speed)...")
-                    crew.setup_team(max_messages=6)
-                    log(f"Team ready: {', '.join(crew.get_agent_names())}")
-
-                    task = f"""
+                task = f"""
 Perform a comprehensive prognosis analysis for this patient:
 
 Patient ID: {patient_data['id']}
@@ -742,51 +1232,178 @@ Recent Visits: {patient_data['visit_count']}
 Clinical Data:
 {patient_data['clinical_summary']}
 
-Each specialist should contribute:
-1. Neurologist: Review case, identify key clinical findings
-2. Prognosis Analyst: Analyze trends and trajectory
-3. Treatment Advisor: Suggest any treatment adjustments
-4. QA Validator: Verify data accuracy
-5. Report Generator: Summarize findings
+Each specialist should contribute their analysis in order:
+1. Neurologist: Review case, identify key clinical findings and red flags
+2. Prognosis Analyst: Analyze trends and trajectory projection
+3. Treatment Advisor: Suggest any treatment adjustments with dosing
+4. QA Validator: Verify data accuracy and flag anomalies
+5. Report Generator: Synthesize all findings into a cohesive report
+6. Clinical Architect: Review HIPAA compliance and data model integrity
 
-Collaborate to provide a comprehensive assessment. When all specialists have contributed, end the discussion.
+Collaborate to provide a comprehensive assessment. Build on previous agents' findings. When all 6 specialists have contributed, end the discussion.
 """
-                    log(f"Task prepared ({len(task)} chars)")
-                    log("Starting run_stream - waiting for LLM responses...")
+                log("Starting agent pipeline...")
+                current_agent = None
+                known_agents = set(agent_states.keys())
 
-                    message_count = 0
-                    async for message in crew._team.run_stream(task=task):
-                        message_count += 1
-                        msg_type = type(message).__name__
-                        log(f"Message #{message_count}: {msg_type}")
+                async for message in crew._team.run_stream(task=task):
+                    total_elapsed = time.time() - pipeline_start
 
-                        if hasattr(message, 'content') and message.content:
-                            agent_name = getattr(message, 'source', 'System')
-                            log(f"   From: {agent_name} ({len(str(message.content))} chars)")
-                            response_texts.append(
-                                f'<div class="agent-response">'
-                                f'<div class="agent-label">{agent_name}</div>'
-                                f'<div class="agent-content">{message.content}</div>'
-                                f'</div>'
-                            )
-                            analysis_placeholder.markdown(
-                                "\n".join(response_texts),
-                                unsafe_allow_html=True
-                            )
+                    if hasattr(message, 'content') and message.content:
+                        agent_name = getattr(message, 'source', 'System')
+
+                        # Skip non-agent messages (user input, system)
+                        if agent_name not in known_agents:
+                            log(f"Task submitted to pipeline ({len(str(message.content))} chars)")
+                            update_pipeline(total_elapsed)
+                            continue
+
+                        # If a new agent is responding, mark previous as done
+                        if agent_name != current_agent:
+                            # Finish previous agent
+                            if current_agent and current_agent in known_agents:
+                                elapsed = time.time() - agent_start_times.get(current_agent, time.time())
+                                agent_states[current_agent]["status"] = "done"
+                                agent_states[current_agent]["elapsed_s"] = elapsed
+                                agent_timings[current_agent] = elapsed
+                                log(f"{AGENT_DISPLAY_NAMES.get(current_agent, current_agent)} completed in {elapsed:.1f}s")
+
+                            # Start new agent
+                            current_agent = agent_name
+                            agent_start_times[agent_name] = time.time()
+                            agent_states[agent_name]["status"] = "running"
+                            log(f"{AGENT_DISPLAY_NAMES.get(agent_name, agent_name)} analyzing...")
+
+                        # Store result (append if same agent sends multiple messages)
+                        if agent_name in agent_results:
+                            agent_results[agent_name] += "\n\n" + str(message.content)
                         else:
-                            log(f"   No content (may be TaskResult)")
+                            agent_results[agent_name] = str(message.content)
 
-                    log(f"Stream complete. Total messages: {message_count}")
+                        # Update running time
+                        if current_agent and current_agent in agent_start_times:
+                            agent_states[current_agent]["elapsed_s"] = time.time() - agent_start_times[current_agent]
 
-                log("Calling asyncio.run()...")
-                asyncio.run(run_analysis())
+                        update_pipeline(total_elapsed)
 
-                st.success("Analysis complete!")
+                # Mark final agent as done
+                if current_agent and current_agent in agent_states:
+                    elapsed = time.time() - agent_start_times.get(current_agent, time.time())
+                    agent_states[current_agent]["status"] = "done"
+                    agent_states[current_agent]["elapsed_s"] = elapsed
+                    agent_timings[current_agent] = elapsed
+                    log(f"{AGENT_DISPLAY_NAMES.get(current_agent, current_agent)} completed in {elapsed:.1f}s")
 
-            except Exception as e:
-                log(f"Error: {str(e)}")
-                st.error(f"Error running analysis: {str(e)}")
-                st.exception(e)
+                total_elapsed = time.time() - pipeline_start
+                update_pipeline(total_elapsed)
+                log(f"Pipeline complete. Total time: {total_elapsed:.1f}s")
+
+            _run_async(run_analysis())
+
+            total_time = time.time() - pipeline_start
+            done_count = sum(1 for s in agent_states.values() if s["status"] == "done")
+
+            # Update status widget
+            status_widget.update(
+                label=f"Analysis complete! {done_count} agents | {total_time:.1f}s total",
+                state="complete",
+                expanded=False,
+            )
+
+        except Exception as e:
+            # Mark running agents as error
+            for name, state in agent_states.items():
+                if state["status"] == "running":
+                    state["status"] = "error"
+            update_pipeline(time.time() - pipeline_start)
+            log(f"Pipeline error: {e}")
+            status_widget.update(label=f"Analysis failed: {e}", state="error")
+            st.error(f"Error running analysis: {html.escape(str(e))}")
+            logger.exception("Pipeline analysis failed")
+            st.exception(e)
+            return
+
+    # Store results in session state (outside the status widget)
+    total_time = time.time() - pipeline_start
+    st.session_state["last_agent_results"] = agent_results
+    st.session_state["last_agent_timings"] = agent_timings
+    st.session_state["last_total_time"] = total_time
+    st.session_state["last_patient_data"] = patient_data
+
+    # Generate downloadable report
+    report_html = _generate_downloadable_report(
+        patient_data, agent_results, agent_timings, total_time
+    )
+    st.session_state["last_report_html"] = report_html
+
+    # Show report immediately
+    _show_report_section()
+
+
+def _show_report_section():
+    """Show the summary report and download button from session state."""
+    agent_results = st.session_state.get("last_agent_results", {})
+    agent_timings = st.session_state.get("last_agent_timings", {})
+    total_time = st.session_state.get("last_total_time", 0.0)
+    patient_data = st.session_state.get("last_patient_data", {})
+    report_html = st.session_state.get("last_report_html", "")
+
+    if not agent_results:
+        return
+
+    st.markdown("---")
+
+    # Report header
+    st.markdown(f"""
+    <div class="report-header">
+        <h2>Clinical Analysis Report</h2>
+        <div class="report-meta">
+            Patient: {html.escape(str(patient_data.get('id', '')))} |
+            Condition: {html.escape(str(patient_data.get('condition', '')))} |
+            Agents: {len(agent_results)} |
+            Time: {total_time:.1f}s
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Summary: last agent (Report Generator) gets highlighted
+    report_gen_content = agent_results.get("ReportGenerator", "")
+    if report_gen_content:
+        st.markdown(f"""
+        <div class="report-card" style="border-color: #10b981;">
+            <h3 style="color: #10b981;">Executive Summary (Report Generator)</h3>
+            <div class="report-body">{html.escape(report_gen_content)}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # Expandable sections for each agent
+    st.markdown('<div class="section-header">Detailed Agent Reports</div>', unsafe_allow_html=True)
+    for meta in AGENT_META:
+        name = meta["name"]
+        if name == "ReportGenerator":
+            continue  # Already shown above
+        display = AGENT_DISPLAY_NAMES.get(name, name)
+        content = agent_results.get(name, "")
+        elapsed = agent_timings.get(name, 0.0)
+        if content:
+            with st.expander(f"{display} ({elapsed:.1f}s)"):
+                st.markdown(f"""
+                <div class="report-card">
+                    <h3>{html.escape(display)} Analysis</h3>
+                    <div class="report-body">{html.escape(content)}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+    # Download button
+    if report_html:
+        st.markdown("---")
+        st.download_button(
+            label="Download Detailed Report (HTML)",
+            data=report_html,
+            file_name=f"clinical_report_{patient_data.get('id', 'unknown')}_{datetime.now().strftime('%Y%m%d_%H%M')}.html",
+            mime="text/html",
+            use_container_width=True,
+        )
 
 
 def show_single_agent_page():
@@ -809,8 +1426,8 @@ def show_single_agent_page():
         }
         st.markdown(f"""
         <div class="agent-card" style="margin-top: 1.6rem;">
-            <div class="agent-name">{agent_type}</div>
-            <div class="agent-role">{descriptions[agent_type]}</div>
+            <div class="agent-name">{html.escape(agent_type)}</div>
+            <div class="agent-role">{html.escape(descriptions[agent_type])}</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -861,15 +1478,11 @@ Should we adjust the treatment?"""
 
         with st.spinner(f"Consulting {agent_type}..."):
             try:
-                import nest_asyncio
-                nest_asyncio.apply()
-
                 chat = SingleAgentChat()
                 response_text = []
 
                 async def run_consultation():
                     """Run consultation and collect responses."""
-                    from autogen_agentchat.messages import TextMessage
 
                     if agent_type == "Neurologist":
                         from src.agents import NeurologistAgent
@@ -905,10 +1518,11 @@ Should we adjust the treatment?"""
                     async for message in team.run_stream(task=query):
                         if hasattr(message, 'content') and message.content:
                             agent_name = getattr(message, 'source', agent_type)
+                            safe_content = html.escape(str(message.content))
                             response_text.append(
                                 f'<div class="agent-response">'
-                                f'<div class="agent-label">{agent_name}</div>'
-                                f'<div class="agent-content">{message.content}</div>'
+                                f'<div class="agent-label">{html.escape(str(agent_name))}</div>'
+                                f'<div class="agent-content">{safe_content}</div>'
                                 f'</div>'
                             )
                             response_placeholder.markdown(
@@ -916,11 +1530,12 @@ Should we adjust the treatment?"""
                                 unsafe_allow_html=True
                             )
 
-                asyncio.run(run_consultation())
+                _run_async(run_consultation())
                 st.success("Consultation complete!")
 
             except Exception as e:
                 st.error(f"Error: {str(e)}")
+                logger.exception("Consultation failed")
                 st.exception(e)
 
 
@@ -936,10 +1551,7 @@ def show_about_page():
             <span class="tech-badge">Microsoft AutoGen 0.4+</span>
             <span class="tech-badge">Python 3.12</span>
             <span class="tech-badge">Streamlit</span>
-            <span class="tech-badge">FastAPI</span>
             <span class="tech-badge">Pydantic v2</span>
-            <span class="tech-badge">SQLAlchemy</span>
-            <span class="tech-badge">SQLite</span>
             <span class="tech-badge">OpenAI API</span>
             <span class="tech-badge">Ollama</span>
         </p>
@@ -970,8 +1582,8 @@ def show_about_page():
         for name, desc in agents:
             st.markdown(f"""
             <div class="agent-card">
-                <div class="agent-name">{name}</div>
-                <div class="agent-role">{desc}</div>
+                <div class="agent-name">{html.escape(name)}</div>
+                <div class="agent-role">{html.escape(desc)}</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -995,8 +1607,8 @@ def show_about_page():
         for name, desc in techniques:
             st.markdown(f"""
             <div class="agent-card">
-                <div class="agent-name">{name}</div>
-                <div class="agent-role">{desc}</div>
+                <div class="agent-name">{html.escape(name)}</div>
+                <div class="agent-role">{html.escape(desc)}</div>
             </div>
             """, unsafe_allow_html=True)
 

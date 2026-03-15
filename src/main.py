@@ -1,5 +1,5 @@
 """
-NeuroCrew AI - Main Entry Point
+Agentic Neuro Tracker - Main Entry Point
 
 Run the multi-agent neurology patient tracking system.
 Includes LLM telemetry for cost and performance tracking.
@@ -41,7 +41,7 @@ def _shutdown():
 async def run_demo():
     """Run a demonstration with sample patient data."""
     print("\n" + "=" * 60)
-    print("NeuroCrew AI - Demo Mode")
+    print("Agentic Neuro Tracker - Demo Mode")
     print("=" * 60)
 
     # Sample patient for demonstration
@@ -167,7 +167,7 @@ def main():
         print(f"\nWarning: Unknown LLM_PROVIDER: {settings.LLM_PROVIDER}")
         print("   Defaulting to local LLM...")
 
-    print("\nNeuroCrew AI")
+    print("\nAgentic Neuro Tracker")
     print("-" * 40)
     print(f"Telemetry: Session {_telemetry._session_id[:8]}... started")
     print("-" * 40)
